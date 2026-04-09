@@ -1,12 +1,25 @@
+#define SDL_MAIN_HANDLED
+
 #include<sys/ioctl.h>
 #include<stdio.h>
 #include<ncurses.h>
+#include<SDL2/SDL.h>
+#include<SDL2/SDL_mixer.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <errno.h>
 
-static void setMode();
+WINDOW *newWindow(int rows, int cols, int y, int x);
 static void endProgram();
-static void updateMenu(int val);
 static void displayMenu();
-static void displayPlayer();
+static void clearBuf();
+static void displayFilechooser();
+static void fileLogic();
+static void updateMenu(int val);
+char *concat(const char *s1, const char *s2);
+
+char path[1024];
+char configFilepath[1024];
 
 struct winsize w;
 unsigned short centerX, centerY;
@@ -21,23 +34,31 @@ const int PLAYERCUTOFFSETX = 11;
 const int PLAYERCUTOFFSETY = 3;
 const char titleText[]          = "Welcome to Musicritty!";
 const char quitShortcutText[]   = "<S-q> to quit";
-const char versionText[]        = "vers. 0.0.1";
+const char versionText[]        = "vers. 0.1.0";
 const char playerShortcutText[] = "<S-e> to enter player";
 
 typedef enum {
-  BACK = 81,				         // Shift + q
-  CONTINUE = 69 			       // Shift + e
+  BACK     = 81,				     // Shift + q
+  CONTINUE = 69, 			       // Shift + e
+  PLAY     = 80,             // Shift + p
+  PAUSE    = 83              // Shift + s
 } keys;
 typedef enum {
   EXIT,
-  MENU,
-  CREATION,
+  MENU, 
   PLAYER
 } modes;
 
 modes currentMode;
 
 int main(int** argc, char argv[]) {
+  SDL_Init(SDL_INIT_AUDIO);
+  Mix_Music* music = NULL;
+  Mix_OpenAudio(41000, MIX_DEFAULT_FORMAT, 2, 4096);
+  //music = Mix_LoadMUS("/home/mike/Downloads/hum.wav");   // TODO: Change file searching system
+
+  //Mix_PlayMusic(music, 0);
+
   int ch;
   
   ioctl(0, TIOCGWINSZ, &w);
@@ -59,12 +80,19 @@ int main(int** argc, char argv[]) {
   
   //attron(COLOR_PAIR(1));
 
+  if(SDL_Init(SDL_INIT_AUDIO) == -1) {
+    printf("could not initalize SDL: %s. \n", SDL_GetError());
+    goto exitError;
+  }
+
   getmaxyx(stdscr, y, x);
   centerX = ((w.ws_col / 2));
   centerY = ((w.ws_row / 2));
 
   currentMode = MENU;
   displayMenu();
+
+  fileLogic();
 
   //attroff(COLOR_PAIR(1));
   
@@ -77,8 +105,11 @@ int main(int** argc, char argv[]) {
         break;
       case BACK:
         currentMode--;
-        if (currentMode == 0) goto exit;
+        if (currentMode == EXIT) goto exit;
         updateMenu(currentMode); 
+        break;
+      case PLAY:
+        if (currentMode == MENU) break;
         break;
       default:
         break;
@@ -86,8 +117,32 @@ int main(int** argc, char argv[]) {
   }while(true);
 
   exit:
+    Mix_FreeMusic(music);
+    Mix_CloseAudio();
+    SDL_Quit();
     endwin();
     return 0;
+  exitError:
+    endwin();
+    printf("Unknown error");
+    return 1;
+}
+
+WINDOW *newWindow(int rows, int cols, int y, int x) {
+  WINDOW *localWin;
+
+  localWin = newwin(rows, cols, y, x);
+  box(localWin, 0, 0);
+
+  wrefresh(localWin);
+  return localWin;
+}
+
+static void destroyWindow(WINDOW *localWin) {
+  wborder(localWin, ' ', ' ', ' ',' ',' ',' ',' ',' ');
+  
+  wrefresh(localWin);
+  delwin(localWin);
 }
 
 static void endProgram() {
@@ -96,18 +151,65 @@ static void endProgram() {
 
 static void displayMenu() {
   werase(stdscr);
-  mvwprintw(stdscr, (centerY - TITLEOFFSETY), (centerX - TITLEOFFSETX), titleText);
-  mvwprintw(stdscr, (centerY - VERSIONOFFSETY), (centerX - VERSIONOFFSETX), versionText);
-  mvwprintw(stdscr, (centerY + QUITCUTOFFSETY), (centerX - QUITCUTOFFSETX), quitShortcutText);
-  mvwprintw(stdscr, (centerY + PLAYERCUTOFFSETY), (centerX - PLAYERCUTOFFSETX), playerShortcutText);
+  mvwprintw(stdscr, 
+           (centerY - TITLEOFFSETY), 
+           (centerX - TITLEOFFSETX), 
+           titleText);
+  mvwprintw(stdscr, 
+           (centerY - VERSIONOFFSETY), 
+           (centerX - VERSIONOFFSETX), 
+           versionText);
+  mvwprintw(stdscr, 
+           (centerY + QUITCUTOFFSETY), 
+           (centerX - QUITCUTOFFSETX), 
+           quitShortcutText);
+  mvwprintw(stdscr, 
+           (centerY + PLAYERCUTOFFSETY), 
+           (centerX - PLAYERCUTOFFSETX), 
+           playerShortcutText);
   refresh();
 }
 
-static void displayPlayer() {
+static void clearBuffer() {
   werase(stdscr);
-//  mvwprintw(stdscr, , 0, "test");
-  mvwprintw(stdscr, centerY, centerX, "debug");
   refresh();
+}
+
+static void displayFilechooser() {
+  WINDOW *filechooser = newWindow(centerY, centerX, 0, 0);
+  refresh();
+}
+
+static void fileLogic() {
+  char *homeDir = getenv("HOME");
+  snprintf(path, sizeof(path), "%s/.config/musicritty/", homeDir);
+  //snprintf(configFilepath, sizeof(configFilepath), "%sconfig", *path); 
+
+  char tempConfigDir[1024];
+  char configFileName[1024] = "config";
+
+  strcat(tempConfigDir, path); //TODO: this
+
+//  printf(tempConfigDir);
+
+  //printf(path);
+  //printf(configFilepath);
+
+  //FILE *fptr = fopen(configFilepath, "r");
+
+  if (mkdir(path, 
+            S_IRWXU | 
+            S_IRWXG | 
+            S_IRWXO) == -1 
+            && errno != EEXIST) {
+      printf("Error: %s\n", strerror(errno));
+  }
+
+  //if(fptr == NULL) {
+  //  fptr = fopen(configFilepath, "w"); 
+  //}
+  //fprintf(fptr, "test");
+  //fclose(fptr);
 }
 
 static void updateMenu(int val) {
@@ -116,7 +218,8 @@ static void updateMenu(int val) {
       displayMenu();
       break;
     case 2:
-      displayPlayer();
+      clearBuffer(); 
+      displayFilechooser();
       break;
     default:
       currentMode--;
@@ -124,3 +227,12 @@ static void updateMenu(int val) {
   }
 }
 
+ char *concat(const char *s1, const char *s2) {
+    const size_t len1 = strlen(s1);
+    const size_t len2 = strlen(s2);
+    char *result = malloc(len1 + len2 + 1); // +1 for the null-terminator
+    // in real code you would check for errors in malloc here
+    memcpy(result, s1, len1);
+    memcpy(result + len1, s2, len2 + 1); // +1 to copy the null-terminator
+    return result;
+}
